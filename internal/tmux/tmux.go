@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/GianlucaP106/gotmux/gotmux"
+	"github.com/jh3/claude-fzf/internal/config"
 )
 
 // Manager handles tmux operations
@@ -32,9 +34,9 @@ func (m *Manager) SessionExists(name string) bool {
 	return m.tmux.HasSession(name)
 }
 
-// CreateProjectSession creates a new tmux session with 4 windows
+// CreateProjectSession creates a new tmux session with configured windows
 // If shellCommand is provided, the first window (claude) runs that command
-func (m *Manager) CreateProjectSession(name, projectPath, shellCommand string) error {
+func (m *Manager) CreateProjectSession(name, projectPath, shellCommand string, windows []config.Window) error {
 	sess, err := m.tmux.NewSession(&gotmux.SessionOptions{
 		Name:           name,
 		StartDirectory: projectPath,
@@ -45,20 +47,28 @@ func (m *Manager) CreateProjectSession(name, projectPath, shellCommand string) e
 	}
 
 	// Rename the first window to "claude"
-	windows, err := sess.ListWindows()
-	if err == nil && len(windows) > 0 {
-		windows[0].Rename("claude")
+	existingWindows, err := sess.ListWindows()
+	if err == nil && len(existingWindows) > 0 {
+		existingWindows[0].Rename("claude")
 	}
 
-	// Create additional windows
-	windowNames := []string{"logs", "edit", "scratch"}
-	for _, winName := range windowNames {
+	// Create additional windows from config
+	for _, winCfg := range windows {
 		_, err := sess.NewWindow(&gotmux.NewWindowOptions{
-			WindowName:     winName,
+			WindowName:     winCfg.Name,
 			StartDirectory: projectPath,
 		})
 		if err != nil {
 			return err
+		}
+
+		// Run command in window if specified (silently via respawn-pane)
+		// Wrap command so shell stays alive after command exits
+		if winCfg.Command != "" {
+			target := fmt.Sprintf("%s:%s", name, winCfg.Name)
+			escaped := strings.ReplaceAll(winCfg.Command, "'", "'\\''")
+			wrapped := fmt.Sprintf("sh -c '%s; exec \"$SHELL\"'", escaped)
+			m.tmux.Command("respawn-pane", "-k", "-t", target, wrapped)
 		}
 	}
 

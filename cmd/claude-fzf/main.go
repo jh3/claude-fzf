@@ -7,10 +7,13 @@ import (
 	"sort"
 
 	"github.com/jh3/claude-fzf/internal/cache"
+	"github.com/jh3/claude-fzf/internal/config"
 	"github.com/jh3/claude-fzf/internal/session"
 	"github.com/jh3/claude-fzf/internal/tmux"
 	"github.com/jh3/claude-fzf/internal/ui"
 )
+
+var cfg *config.Config
 
 func main() {
 	if len(os.Args) > 1 {
@@ -30,7 +33,7 @@ func main() {
 }
 
 func printHelp() {
-	fmt.Print(`claude-fzf - Fuzzy search and resume Claude Code sessions
+	fmt.Printf(`claude-fzf - Fuzzy search and resume Claude Code sessions
 
 Usage: claude-fzf [command]
 
@@ -47,12 +50,24 @@ Keybindings (in picker):
 Tmux Integration:
   When running inside tmux, selecting a session will:
   - Create a tmux session named after the project (if new)
-  - Set up 4 windows: claude, logs, edit, scratch
+  - Set up windows: claude (always) + configured windows
   - Resume Claude in the claude window
-`)
+
+Configuration:
+  Config file: %s
+
+  Example config:
+    tmux:
+      windows:
+        - name: logs
+        - name: edit
+        - name: tests
+          command: npm test -- --watch
+`, config.Path())
 }
 
 func runInteractive() {
+	cfg = config.Load()
 	sessions := loadSessions()
 
 	selected, err := ui.SelectSession(sessions)
@@ -86,7 +101,7 @@ func resumeInTmux(s *session.Session) {
 	claudeCmd := fmt.Sprintf("claude --resume %s", s.ID)
 
 	if !mgr.SessionExists(sessionName) {
-		mgr.CreateProjectSession(sessionName, s.ProjectPath, "")
+		mgr.CreateProjectSession(sessionName, s.ProjectPath, "", cfg.Tmux.Windows)
 	}
 
 	mgr.SwitchToSession(sessionName)

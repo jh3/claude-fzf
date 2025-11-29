@@ -69,12 +69,35 @@ When running inside tmux, claude-fzf provides per-project session management.
 
 Selecting a Claude session will:
 1. Create a tmux session named after the project directory
-2. Set up 4 windows: `claude`, `logs`, `edit`, `scratch`
+2. Set up windows: `claude` (always) plus any configured windows
 3. Resume the Claude session in the `claude` window
 
 If a tmux session for that project already exists, it switches to it.
 
 When running outside tmux, Claude resumes directly in your current terminal.
+
+### Configuring Tmux Windows
+
+You can customize the additional windows that are created alongside the `claude` window.
+
+Config file location: `~/.config/claude-fzf/config.yaml`
+
+```yaml
+tmux:
+  windows:
+    - name: logs
+    - name: edit
+    - name: tests
+      command: npm test -- --watch
+    - name: server
+      command: make run
+```
+
+Each window can optionally run a command on startup. Commands run silently (not typed out) and the shell stays alive after the command exits.
+
+**Default windows** (when no config exists): `logs`, `edit`, `scratch`
+
+See [config.example.yaml](config.example.yaml) for a full example.
 
 ### Tmux Keybinding (recommended)
 
@@ -102,9 +125,11 @@ claude-fzf/
 ├── cmd/claude-fzf/main.go    # Entrypoint
 ├── internal/
 │   ├── cache/cache.go        # Mtime-based caching
+│   ├── config/config.go      # Configuration loading
 │   ├── session/              # Session discovery & parsing
 │   ├── tmux/tmux.go          # Tmux integration
 │   └── ui/fzf.go             # Fuzzy finder UI
+├── config.example.yaml       # Example configuration
 ├── go.mod
 ├── Makefile
 └── README.md

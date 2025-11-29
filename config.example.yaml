@@ -1,0 +1,23 @@
+# claude-fzf configuration
+# Copy to: ~/.config/claude-fzf/config.yaml
+
+# Tmux window configuration
+# The "claude" window is always created first (not configurable).
+# These are the additional windows created alongside it.
+#
+# Window names can be anything you want (e.g., "tests", "server", "docker").
+# Commands are optional and run silently when the window is created.
+tmux:
+  windows:
+    # Simple window (just opens a shell)
+    - name: logs
+      command: docker compose logs -f
+
+    # Window for editing files
+    - name: edit
+      command: nvim
+
+    # Window with a command that runs on startup
+    # The shell stays alive after the command exits
+    - name: scratch
+      command: echo "Ready to scratch"
