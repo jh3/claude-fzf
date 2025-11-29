@@ -81,6 +81,8 @@ Selecting a Claude session will:
 
 If a tmux session for that project already exists, it switches to it.
 
+If you run `tmux` and then `claude-fzf`, the tool will repurpose that "scratch" session (numeric name, 1-2 windows) instead of creating a new one and leaving the old one orphaned.
+
 When running outside tmux, Claude resumes directly in your current terminal.
 
 ### Configuring Tmux Windows
@@ -100,7 +102,7 @@ tmux:
       command: make run
 ```
 
-Each window can optionally run a command on startup. Commands run silently (not typed out) and the shell stays alive after the command exits.
+Each window can optionally run a command on startup. Commands run silently and the shell stays alive after the command exits.
 
 **Default windows** (when no config exists): `logs`, `edit`, `scratch`
 
@@ -114,7 +116,7 @@ Add to `~/.tmux.conf`:
 bind-key g new-window "claude-fzf"
 ```
 
-Then press `Ctrl-B g` to open the session picker from anywhere in tmux.
+Then press `<tmux_prefix> g` to open the session picker from anywhere in tmux.
 
 ## How it works
 
@@ -135,7 +137,7 @@ claude-fzf/
 │   ├── config/config.go      # Configuration loading
 │   ├── session/              # Session discovery & parsing
 │   ├── tmux/tmux.go          # Tmux integration
-│   └── ui/fzf.go             # Fuzzy finder UI
+│   └── ui/picker.go          # Interactive picker UI
 ├── config.example.yaml       # Example configuration
 ├── go.mod
 ├── Makefile
