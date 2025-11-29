@@ -24,14 +24,13 @@ Fuzzy search and resume Claude Code sessions from any terminal.
 ```bash
 git clone https://github.com/jh3/claude-fzf.git
 cd claude-fzf
-make build
-mv claude-fzf-go /usr/local/bin/claude-fzf
+make install  # builds and installs to /usr/local/bin/
 ```
 
-Or use the install target:
+Or build without installing:
 
 ```bash
-make install  # builds and moves to /usr/local/bin/claude-fzf
+make build    # creates ./claude-fzf
 ```
 
 ## Usage
