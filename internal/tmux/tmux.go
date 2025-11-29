@@ -102,6 +102,14 @@ func (m *Manager) SendKeysToWindow(sessionName, windowName, keys string) error {
 	return pane.SendKeys("Enter")
 }
 
+// RespawnWindow kills the current process in a window and runs a new command
+// This runs the command directly without visible typing
+func (m *Manager) RespawnWindow(sessionName, windowName, command string) error {
+	target := fmt.Sprintf("%s:%s", sessionName, windowName)
+	_, err := m.tmux.Command("respawn-pane", "-k", "-t", target, command)
+	return err
+}
+
 // ProjectToSessionName converts a project path to a session name
 func ProjectToSessionName(projectPath string) string {
 	name := filepath.Base(projectPath)

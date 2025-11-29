@@ -90,7 +90,7 @@ func resumeInTmux(s *session.Session) {
 	}
 
 	mgr.SwitchToSession(sessionName)
-	mgr.SendKeysToWindow(sessionName, "claude", claudeCmd)
+	mgr.RespawnWindow(sessionName, "claude", claudeCmd)
 }
 
 func resumeDirectly(s *session.Session) {
