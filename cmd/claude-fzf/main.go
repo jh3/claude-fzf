@@ -86,7 +86,7 @@ func resumeInTmux(s *session.Session) {
 	claudeCmd := fmt.Sprintf("claude --resume %s", s.ID)
 
 	if !mgr.SessionExists(sessionName) {
-		mgr.CreateProjectSession(sessionName, s.ProjectPath)
+		mgr.CreateProjectSession(sessionName, s.ProjectPath, "")
 	}
 
 	mgr.SwitchToSession(sessionName)

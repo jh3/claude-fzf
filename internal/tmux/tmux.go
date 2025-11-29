@@ -33,10 +33,12 @@ func (m *Manager) SessionExists(name string) bool {
 }
 
 // CreateProjectSession creates a new tmux session with 4 windows
-func (m *Manager) CreateProjectSession(name, projectPath string) error {
+// If shellCommand is provided, the first window (claude) runs that command
+func (m *Manager) CreateProjectSession(name, projectPath, shellCommand string) error {
 	sess, err := m.tmux.NewSession(&gotmux.SessionOptions{
 		Name:           name,
 		StartDirectory: projectPath,
+		ShellCommand:   shellCommand,
 	})
 	if err != nil {
 		return err
@@ -76,7 +78,7 @@ func (m *Manager) SwitchToSession(name string) error {
 	})
 }
 
-// SendKeysToWindow sends keys to a specific window
+// SendKeysToWindow sends keys to a specific window and executes them
 func (m *Manager) SendKeysToWindow(sessionName, windowName, keys string) error {
 	sess, err := m.tmux.GetSessionByName(sessionName)
 	if err != nil {
@@ -93,7 +95,11 @@ func (m *Manager) SendKeysToWindow(sessionName, windowName, keys string) error {
 		return fmt.Errorf("no panes in window: %s", windowName)
 	}
 
-	return panes[0].SendKeys(keys)
+	pane := panes[0]
+	if err := pane.SendKeys(keys); err != nil {
+		return err
+	}
+	return pane.SendKeys("Enter")
 }
 
 // ProjectToSessionName converts a project path to a session name
