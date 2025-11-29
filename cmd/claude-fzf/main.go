@@ -16,10 +16,24 @@ import (
 var cfg *config.Config
 
 func main() {
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
+	showAll := false
+	args := os.Args[1:]
+
+	// Parse flags
+	var filtered []string
+	for _, arg := range args {
+		switch arg {
+		case "-a", "--all":
+			showAll = true
+		default:
+			filtered = append(filtered, arg)
+		}
+	}
+
+	if len(filtered) > 0 {
+		switch filtered[0] {
 		case "list":
-			listSessions()
+			listSessions(showAll)
 		case "clear-cache":
 			clearCache()
 		case "-h", "--help":
@@ -29,13 +43,13 @@ func main() {
 		}
 		return
 	}
-	runInteractive()
+	runInteractive(showAll)
 }
 
 func printHelp() {
 	fmt.Printf(`claude-fzf - Fuzzy search and resume Claude Code sessions
 
-Usage: claude-fzf [command]
+Usage: claude-fzf [flags] [command]
 
 Commands:
   (none)        Interactive session picker
@@ -43,8 +57,13 @@ Commands:
   clear-cache   Clear the session cache
   -h, --help    Show this help
 
+Flags:
+  -a, --all     Start with empty sessions visible (0 messages)
+
 Keybindings (in picker):
   Enter         Resume selected session
+  Ctrl-D        Delete selected session (with confirmation)
+  Ctrl-A        Toggle showing empty sessions
   Ctrl-C/Esc    Cancel
 
 Tmux Integration:
@@ -66,20 +85,21 @@ Configuration:
 `, config.Path())
 }
 
-func runInteractive() {
+func runInteractive(showAll bool) {
 	cfg = config.Load()
-	sessions := loadSessions()
+	sessions := loadAllSessions()
 
-	selected, err := ui.SelectSession(sessions)
+	result, err := ui.SelectSession(sessions, showAll)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	if selected == nil {
-		return // User cancelled
+
+	if result.Session == nil || result.Action != ui.ActionResume {
+		return // User cancelled or performed other action
 	}
 
-	resumeSession(selected)
+	resumeSession(result.Session)
 }
 
 func resumeSession(s *session.Session) {
@@ -101,11 +121,42 @@ func resumeInTmux(s *session.Session) {
 	claudeCmd := fmt.Sprintf("claude --resume %s", s.ID)
 
 	if !mgr.SessionExists(sessionName) {
-		mgr.CreateProjectSession(sessionName, s.ProjectPath, "", cfg.Tmux.Windows)
+		// Check if we can repurpose the current session
+		if disposable, _ := mgr.IsDisposableSession(); disposable {
+			if err := mgr.RepurposeCurrentSession(sessionName, s.ProjectPath, cfg.Tmux.Windows); err != nil {
+				fmt.Fprintf(os.Stderr, "Error repurposing session: %v\n", err)
+				os.Exit(1)
+			}
+			// Respawn claude window and select it
+			// Wrap command to keep pane alive if claude exits
+			wrappedCmd := fmt.Sprintf("cd %q && %s; exec $SHELL", s.ProjectPath, claudeCmd)
+			if err := mgr.RespawnWindow(sessionName, "claude", wrappedCmd); err != nil {
+				fmt.Fprintf(os.Stderr, "Error respawning window: %v\n", err)
+				os.Exit(1)
+			}
+			if err := mgr.SelectWindow(sessionName, "claude"); err != nil {
+				fmt.Fprintf(os.Stderr, "Error selecting window: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+
+		// Create a new session
+		if err := mgr.CreateProjectSession(sessionName, s.ProjectPath, "", cfg.Tmux.Windows); err != nil {
+			fmt.Fprintf(os.Stderr, "Error creating tmux session: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
-	mgr.SwitchToSession(sessionName)
-	mgr.RespawnWindow(sessionName, "claude", claudeCmd)
+	if err := mgr.SwitchToSession(sessionName); err != nil {
+		fmt.Fprintf(os.Stderr, "Error switching to session: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := mgr.RespawnWindow(sessionName, "claude", claudeCmd); err != nil {
+		fmt.Fprintf(os.Stderr, "Error respawning window: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func resumeDirectly(s *session.Session) {
@@ -120,7 +171,7 @@ func resumeDirectly(s *session.Session) {
 	cmd.Run()
 }
 
-func loadSessions() []session.Session {
+func loadAllSessions() []session.Session {
 	c := cache.New()
 	scanner := session.NewScanner()
 
@@ -139,8 +190,24 @@ func loadSessions() []session.Session {
 	return sessions
 }
 
-func listSessions() {
-	sessions := loadSessions()
+func loadSessions(showAll bool) []session.Session {
+	sessions := loadAllSessions()
+
+	if !showAll {
+		var filtered []session.Session
+		for _, s := range sessions {
+			if s.UserMsgCount > 0 || s.AsstMsgCount > 0 {
+				filtered = append(filtered, s)
+			}
+		}
+		return filtered
+	}
+
+	return sessions
+}
+
+func listSessions(showAll bool) {
+	sessions := loadSessions(showAll)
 	for _, s := range sessions {
 		fmt.Printf("%s|%s|%s|%s\n",
 			s.ID,

@@ -8,7 +8,9 @@ Fuzzy search and resume Claude Code sessions from any terminal.
 - Search across all Claude Code sessions from all projects
 - Preview session details (summary, messages, git branch)
 - Resume any session with Enter
+- Delete sessions with confirmation
 - Tmux integration with automatic project session management
+- Empty sessions (0 messages) hidden by default
 
 ## Requirements
 
@@ -39,13 +41,18 @@ claude-fzf              # Interactive session picker
 claude-fzf list         # List all sessions (for scripting)
 claude-fzf clear-cache  # Clear the session cache
 claude-fzf --help       # Show help
+
+# Flags
+claude-fzf -a           # Start with empty sessions visible
 ```
 
 ### Keybindings (in picker)
 
 | Key | Action |
 |-----|--------|
-| `Enter` | Resume the selected session |
+| `Enter` | Resume selected session |
+| `Ctrl-D` | Delete selected session (with confirmation) |
+| `Ctrl-A` | Toggle showing empty sessions |
 | `Ctrl-C` / `Esc` | Cancel |
 | Type | Filter sessions |
 
