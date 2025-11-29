@@ -12,6 +12,8 @@
 set -euo pipefail
 
 CLAUDE_PROJECTS_DIR="${HOME}/.claude/projects"
+CACHE_DIR="${HOME}/.cache/claude-fzf"
+CACHE_FILE="${CACHE_DIR}/sessions.cache"
 
 # Colors for output
 RED='\033[0;31m'
@@ -40,6 +42,16 @@ Keybindings in FZF:
 Environment variables:
   CLAUDE_FZF_OPTS   Additional options to pass to fzf
 EOF
+}
+
+# Get file modification time as epoch seconds (for cache comparison)
+get_file_mtime() {
+    local file="$1"
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        stat -f "%m" "$file" 2>/dev/null || echo "0"
+    else
+        stat -c "%Y" "$file" 2>/dev/null || echo "0"
+    fi
 }
 
 # Extract session info from a JSONL file
@@ -92,18 +104,79 @@ extract_session_info() {
     echo "${session_id}|${timestamp}|${project_path}|${summary}"
 }
 
-# Generate the list of all sessions for FZF
-generate_session_list() {
-    local project_dir
+# Lookup cached entry for a file (returns "mtime<TAB>info" or empty)
+lookup_cache() {
+    local file="$1"
+    if [[ -f "$CACHE_FILE" ]]; then
+        grep -F "$file"$'\t' "$CACHE_FILE" 2>/dev/null | head -1 | cut -f2-
+    fi
+}
 
-    # Find all JSONL files that are sessions (not agent-*)
-    find "$CLAUDE_PROJECTS_DIR" -maxdepth 2 -name "*.jsonl" -type f 2>/dev/null | while read -r file; do
-        extract_session_info "$file"
-    done | sort -t'|' -k2 -r  # Sort by timestamp descending
+# Generate the list of all sessions for FZF (with caching)
+generate_session_list() {
+    # Ensure cache directory exists
+    mkdir -p "$CACHE_DIR"
+
+    # Temporary file for new cache
+    local new_cache
+    new_cache=$(mktemp)
+
+    # Collect output for sorting
+    local output=""
+
+    # Process all session files (use process substitution to avoid subshell)
+    while read -r file; do
+        # Skip agent sessions
+        local session_id
+        session_id=$(basename "$file" .jsonl)
+        if [[ "$session_id" == agent-* ]]; then
+            continue
+        fi
+
+        local current_mtime
+        current_mtime=$(get_file_mtime "$file")
+
+        local session_info=""
+        local cached_entry
+        cached_entry=$(lookup_cache "$file")
+
+        if [[ -n "$cached_entry" ]]; then
+            # Check if cached mtime matches
+            local cached_mtime cached_info
+            cached_mtime="${cached_entry%%$'\t'*}"
+            cached_info="${cached_entry#*$'\t'}"
+
+            if [[ "$cached_mtime" == "$current_mtime" ]]; then
+                # Use cached data
+                session_info="$cached_info"
+            else
+                # File changed, re-extract
+                session_info=$(extract_session_info "$file")
+            fi
+        else
+            # New file, extract info
+            session_info=$(extract_session_info "$file")
+        fi
+
+        # Collect session info and update cache
+        if [[ -n "$session_info" ]]; then
+            output+="${session_info}"$'\n'
+            printf '%s\t%s\t%s\n' "$file" "$current_mtime" "$session_info" >> "$new_cache"
+        fi
+    done < <(find "$CLAUDE_PROJECTS_DIR" -maxdepth 2 -name "*.jsonl" -type f 2>/dev/null)
+
+    # Update cache file
+    mv "$new_cache" "$CACHE_FILE" 2>/dev/null || true
+
+    # Output sorted results
+    echo -n "$output" | sort -t'|' -k2 -r
 }
 
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Source tmux integration helpers
+source "${SCRIPT_DIR}/claude-fzf-tmux"
 
 main() {
     local preview_only=false
@@ -153,7 +226,6 @@ main() {
         --bind='ctrl-y:execute-silent(echo -n {1} | pbcopy)+abort' \
         --height='80%' \
         --layout=reverse \
-        --border \
         --prompt='Claude Sessions > ' \
         ${CLAUDE_FZF_OPTS:-} \
     ) || true
@@ -172,14 +244,31 @@ main() {
         # Output both path and session ID for shell integration
         echo "${project_path}|${session_id}"
     else
-        # Change to project directory and resume the session
-        if [[ -d "$project_path" ]]; then
-            cd "$project_path"
-            exec claude --resume "$session_id"
+        # Check if we're in tmux and should use session management
+        if is_in_tmux; then
+            local session_name
+            session_name=$(project_to_session_name "$project_path")
+
+            if session_exists "$session_name"; then
+                # Session exists - switch to it and resume claude in the claude window
+                switch_to_session "$session_name"
+                run_in_window "$session_name" "claude" "claude --resume $session_id"
+            else
+                # Create new session with 4-window layout
+                create_project_session "$session_name" "$project_path"
+                switch_to_session "$session_name"
+                run_in_window "$session_name" "claude" "claude --resume $session_id"
+            fi
         else
-            echo "Warning: Project directory not found: $project_path"
-            echo "Attempting to resume anyway..."
-            exec claude --resume "$session_id"
+            # Not in tmux - use original behavior
+            if [[ -d "$project_path" ]]; then
+                cd "$project_path"
+                exec claude --resume "$session_id"
+            else
+                echo "Warning: Project directory not found: $project_path"
+                echo "Attempting to resume anyway..."
+                exec claude --resume "$session_id"
+            fi
         fi
     fi
 }

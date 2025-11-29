@@ -124,9 +124,9 @@ export -f create_project_session switch_to_session run_in_window current_session
 ### Success Criteria
 
 #### Automated Verification:
-- [ ] Script is executable: `test -x claude-fzf-tmux`
-- [ ] Shellcheck passes: `shellcheck claude-fzf-tmux`
-- [ ] Functions are defined: `bash -c 'source claude-fzf-tmux && type is_in_tmux'`
+- [x] Script is executable: `test -x claude-fzf-tmux`
+- [ ] Shellcheck passes: `shellcheck claude-fzf-tmux` (shellcheck not installed)
+- [x] Functions are defined: `bash -c 'source claude-fzf-tmux && type is_in_tmux'`
 
 #### Manual Verification:
 - [ ] `source claude-fzf-tmux && is_in_tmux && echo yes || echo no` returns correct result
@@ -190,8 +190,8 @@ source "${SCRIPT_DIR}/claude-fzf-tmux"
 ### Success Criteria
 
 #### Automated Verification:
-- [ ] Shellcheck passes: `shellcheck claude-fzf`
-- [ ] Script runs without errors: `claude-fzf --help`
+- [ ] Shellcheck passes: `shellcheck claude-fzf` (shellcheck not installed)
+- [x] Script runs without errors: `claude-fzf --help`
 
 #### Manual Verification:
 - [ ] Outside tmux: `claude-fzf` works as before (resumes in current terminal)
@@ -296,8 +296,8 @@ bind -x '"\C-g\C-s": __claude_fzf_sessions_widget'
 ### Success Criteria
 
 #### Automated Verification:
-- [ ] Scripts are executable: `test -x claude-fzf-sessions`
-- [ ] Shellcheck passes: `shellcheck claude-fzf-sessions`
+- [x] Scripts are executable: `test -x claude-fzf-sessions`
+- [ ] Shellcheck passes: `shellcheck claude-fzf-sessions` (shellcheck not installed)
 
 #### Manual Verification:
 - [ ] `Ctrl-G Ctrl-S` opens session picker
@@ -350,7 +350,7 @@ When running outside tmux, behavior is unchanged - Claude resumes in your curren
 ### Success Criteria
 
 #### Automated Verification:
-- [ ] README contains "Tmux Integration" section
+- [x] README contains "Tmux Integration" section
 
 #### Manual Verification:
 - [ ] Documentation is clear and accurate

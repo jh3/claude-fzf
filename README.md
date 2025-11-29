@@ -64,6 +64,37 @@ Then press `Ctrl-G Ctrl-C` from any terminal to search sessions.
 | `Ctrl-J/K` | Move up/down |
 | `Ctrl-C` | Cancel |
 
+## Tmux Integration
+
+When running inside tmux, claude-fzf provides per-project session management:
+
+When you select a Claude session, the tool will:
+1. Create a tmux session named after the project directory (e.g., `claude-fzf`)
+2. Set up 4 windows: `claude`, `logs`, `edit`, `scratch`
+3. Resume the Claude session in the `claude` window
+
+If a tmux session for that project already exists, it simply switches to it.
+
+Use tmux's built-in `Ctrl-B s` to switch between sessions.
+
+When running outside tmux, behavior is unchanged - Claude resumes in your current terminal.
+
+### Tmux Keybinding (recommended)
+
+Add this to your `~/.tmux.conf` to open claude-fzf from anywhere in tmux:
+
+```bash
+bind-key g new-window "/path/to/claude-fzf/claude-fzf"
+```
+
+Then reload tmux config (`Ctrl-B :source-file ~/.tmux.conf`) and press `Ctrl-B g` to open the session picker.
+
+### Testing Tmux Integration
+
+1. **Outside tmux**: Run `claude-fzf`, select a session - should resume in current terminal
+2. **Inside tmux**: Run `claude-fzf` (or `Ctrl-B g`), select a session - should create/switch to project tmux session with 4 windows
+3. **Verify windows**: Press `Ctrl-B w` to see the window list (`claude`, `logs`, `edit`, `scratch`)
+
 ## Customization
 
 ### Custom keybinding
@@ -98,6 +129,7 @@ Claude Code stores session data in `~/.claude/projects/`. Each project directory
 claude-fzf/
 ├── claude-fzf           # Main script
 ├── claude-fzf-preview   # Preview helper for fzf
+├── claude-fzf-tmux      # Tmux utility functions
 ├── claude-fzf.plugin.zsh # Zsh integration
 ├── claude-fzf.bash      # Bash integration
 └── README.md
