@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+#
+# claude-fzf-preview - Preview helper for claude-fzf
+# Usage: claude-fzf-preview <session_id>
+#
+
+set -euo pipefail
+
+CLAUDE_PROJECTS_DIR="${HOME}/.claude/projects"
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+NC='\033[0m' # No Color
+BOLD='\033[1m'
+
+session_id="$1"
+
+if [[ -z "$session_id" ]]; then
+    echo "No session ID provided"
+    exit 1
+fi
+
+# Find the session file
+file=$(find "$CLAUDE_PROJECTS_DIR" -name "${session_id}.jsonl" -type f 2>/dev/null | head -1)
+
+if [[ -z "$file" ]]; then
+    echo "Session file not found: $session_id"
+    exit 1
+fi
+
+# Extract the actual cwd from the session file
+project_path=$(grep -m1 '"cwd"' "$file" 2>/dev/null | jq -r '.cwd // empty' 2>/dev/null || echo "(unknown)")
+
+echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BOLD}Session:${NC} ${YELLOW}$session_id${NC}"
+echo -e "${BOLD}Project:${NC} $project_path"
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+
+# Get summary
+summary=$(grep -m1 '"type":"summary"' "$file" 2>/dev/null | jq -r '.summary // empty' 2>/dev/null || echo "")
+if [[ -n "$summary" ]]; then
+    echo -e "${GREEN}${BOLD}Summary:${NC}"
+    echo "$summary" | fold -w 60
+    echo ""
+fi
+
+# Get git branch if present
+git_branch=$(grep -m1 '"gitBranch"' "$file" 2>/dev/null | jq -r '.gitBranch // empty' 2>/dev/null | head -1 || echo "")
+if [[ -n "$git_branch" ]]; then
+    echo -e "${MAGENTA}Branch:${NC} $git_branch"
+fi
+
+# Count messages
+user_msg_count=$(grep -c '"type":"user"' "$file" 2>/dev/null || echo "0")
+assistant_msg_count=$(grep -c '"type":"assistant"' "$file" 2>/dev/null || echo "0")
+echo -e "${YELLOW}Messages:${NC} $user_msg_count user / $assistant_msg_count assistant"
+
+# File modification time
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    mod_time=$(stat -f "%Sm" -t "%Y-%m-%d %H:%M:%S" "$file" 2>/dev/null || echo "unknown")
+    file_size=$(ls -lh "$file" | awk '{print $5}')
+else
+    mod_time=$(stat -c "%y" "$file" 2>/dev/null | cut -d'.' -f1 || echo "unknown")
+    file_size=$(du -h "$file" | cut -f1)
+fi
+echo -e "${YELLOW}Last modified:${NC} $mod_time"
+echo -e "${YELLOW}Size:${NC} $file_size"
+echo ""
+
+# First user message
+echo -e "${BLUE}${BOLD}First message:${NC}"
+first_user_msg=$(grep -m1 '"type":"user"' "$file" 2>/dev/null | jq -r '.message.content // empty' 2>/dev/null || echo "(none)")
+if [[ -n "$first_user_msg" ]]; then
+    echo "$first_user_msg" | head -c 300 | fold -w 60
+    if [[ ${#first_user_msg} -gt 300 ]]; then
+        echo "..."
+    fi
+fi
+echo ""
+
+# Recent user messages (last 5)
+recent_count=$(grep -c '"type":"user"' "$file" 2>/dev/null || echo "0")
+if [[ $recent_count -gt 1 ]]; then
+    echo -e "${BLUE}${BOLD}Recent messages:${NC}"
+    grep '"type":"user"' "$file" 2>/dev/null | tail -5 | while read -r line; do
+        msg=$(echo "$line" | jq -r '.message.content // empty' 2>/dev/null)
+        if [[ -n "$msg" ]]; then
+            # Truncate long messages
+            short_msg="${msg:0:80}"
+            if [[ ${#msg} -gt 80 ]]; then
+                short_msg="${short_msg}..."
+            fi
+            echo -e "  ${CYAN}•${NC} $short_msg"
+        fi
+    done
+fi
