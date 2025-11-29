@@ -214,7 +214,7 @@ func (m pickerModel) View() string {
 	if m.showEmpty {
 		emptyIndicator = " [+empty]"
 	}
-	b.WriteString(fmt.Sprintf("Sessions %d/%d%s > %s\n\n",
+	b.WriteString(fmt.Sprintf("Sessions %d/%d%s %s\n\n",
 		len(m.filteredSessions), len(m.allSessions), emptyIndicator, m.filter.View()))
 
 	// Calculate layout
