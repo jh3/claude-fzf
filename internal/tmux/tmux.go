@@ -130,21 +130,8 @@ func (m *Manager) RepurposeCurrentSession(newName, projectPath string, windows [
 	}
 
 	// Add the additional windows
-	for _, winCfg := range windows {
-		_, err := sess.NewWindow(&gotmux.NewWindowOptions{
-			WindowName:     winCfg.Name,
-			StartDirectory: projectPath,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to create window %q: %w", winCfg.Name, err)
-		}
-
-		if winCfg.Command != "" {
-			target := fmt.Sprintf("%s:%s", newName, winCfg.Name)
-			escaped := strings.ReplaceAll(winCfg.Command, "'", "'\\''")
-			wrapped := fmt.Sprintf("sh -c '%s; exec \"$SHELL\"'", escaped)
-			m.tmux.Command("respawn-pane", "-k", "-t", target, wrapped)
-		}
+	if err := m.addWindows(sess, newName, projectPath, windows); err != nil {
+		return err
 	}
 
 	// Select the claude window
@@ -180,23 +167,8 @@ func (m *Manager) CreateProjectSession(name, projectPath, shellCommand string, w
 	}
 
 	// Create additional windows from config
-	for _, winCfg := range windows {
-		_, err := sess.NewWindow(&gotmux.NewWindowOptions{
-			WindowName:     winCfg.Name,
-			StartDirectory: projectPath,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to create window %q: %w", winCfg.Name, err)
-		}
-
-		// Run command in window if specified (silently via respawn-pane)
-		// Wrap command so shell stays alive after command exits
-		if winCfg.Command != "" {
-			target := fmt.Sprintf("%s:%s", name, winCfg.Name)
-			escaped := strings.ReplaceAll(winCfg.Command, "'", "'\\''")
-			wrapped := fmt.Sprintf("sh -c '%s; exec \"$SHELL\"'", escaped)
-			m.tmux.Command("respawn-pane", "-k", "-t", target, wrapped)
-		}
+	if err := m.addWindows(sess, name, projectPath, windows); err != nil {
+		return err
 	}
 
 	// Select the claude window
@@ -215,28 +187,30 @@ func (m *Manager) SwitchToSession(name string) error {
 	})
 }
 
-// SendKeysToWindow sends keys to a specific window and executes them
-func (m *Manager) SendKeysToWindow(sessionName, windowName, keys string) error {
-	sess, err := m.tmux.GetSessionByName(sessionName)
-	if err != nil {
-		return err
+// addWindows creates windows from config and runs their startup commands
+func (m *Manager) addWindows(sess *gotmux.Session, sessionName, projectPath string, windows []config.Window) error {
+	for _, winCfg := range windows {
+		_, err := sess.NewWindow(&gotmux.NewWindowOptions{
+			WindowName:     winCfg.Name,
+			StartDirectory: projectPath,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create window %q: %w", winCfg.Name, err)
+		}
+		m.runWindowCommand(sessionName, winCfg.Name, winCfg.Command)
 	}
+	return nil
+}
 
-	w, err := sess.GetWindowByName(windowName)
-	if err != nil {
-		return fmt.Errorf("window not found: %s", windowName)
+// runWindowCommand runs a command in a window, keeping the shell alive after
+func (m *Manager) runWindowCommand(sessionName, windowName, command string) {
+	if command == "" {
+		return
 	}
-
-	panes, err := w.ListPanes()
-	if err != nil || len(panes) == 0 {
-		return fmt.Errorf("no panes in window: %s", windowName)
-	}
-
-	pane := panes[0]
-	if err := pane.SendKeys(keys); err != nil {
-		return err
-	}
-	return pane.SendKeys("Enter")
+	target := fmt.Sprintf("%s:%s", sessionName, windowName)
+	escaped := strings.ReplaceAll(command, "'", "'\\''")
+	wrapped := fmt.Sprintf("sh -c '%s; exec \"$SHELL\"'", escaped)
+	m.tmux.Command("respawn-pane", "-k", "-t", target, wrapped)
 }
 
 // RespawnWindow kills the current process in a window and runs a new command
