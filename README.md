@@ -9,7 +9,6 @@ Fuzzy search and resume Claude Code sessions from any terminal.
 - Preview session details (summary, messages, git branch)
 - Resume any session with Enter
 - Tmux integration with automatic project session management
-- Single binary with zero external dependencies
 
 ## Requirements
 
