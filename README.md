@@ -4,13 +4,12 @@ Fuzzy search and resume Claude Code sessions from any terminal.
 
 ## Features
 
-- Fast startup (~5ms with cache, ~200ms cold)
+- Fast startup
 - Search across all Claude Code sessions from all projects
 - Preview session details (summary, messages, git branch)
 - Resume any session with Enter
 - Delete sessions with confirmation
 - Tmux integration with automatic project session management
-- Empty sessions (0 messages) hidden by default
 
 ## Requirements
 
