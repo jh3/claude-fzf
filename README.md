@@ -4,10 +4,11 @@ Fuzzy search and resume Claude Code sessions from any terminal.
 
 ## Features
 
-- Fast startup
-- Search across all Claude Code sessions from all projects
+- Fast startup with mtime-based caching
+- Sessions grouped by project for easy navigation
 - Preview session details (summary, messages, git branch)
-- Resume any session with Enter
+- Quick resume most recent session with Enter, or expand to see all sessions
+- Create new projects directly from the picker
 - Delete sessions with confirmation
 - Tmux integration with automatic project session management
 
@@ -47,12 +48,25 @@ claude-fzf -a           # Start with empty sessions visible
 
 ### Keybindings (in picker)
 
+**Project view:**
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Resume most recent session in project |
+| `Tab` | Expand project to see all sessions |
+| `Ctrl-N` | Create new project |
+| `Ctrl-A` | Toggle showing empty sessions |
+| `Ctrl-C` / `Esc` | Quit |
+| Type | Filter projects |
+
+**Session view** (after pressing Tab):
+
 | Key | Action |
 |-----|--------|
 | `Enter` | Resume selected session |
-| `Ctrl-D` | Delete selected session (with confirmation) |
+| `Ctrl-D` | Delete session (with confirmation) |
 | `Ctrl-A` | Toggle showing empty sessions |
-| `Ctrl-C` / `Esc` | Cancel |
+| `Esc` | Back to project view |
 | Type | Filter sessions |
 
 ### Shell Keybinding (optional)
@@ -84,13 +98,15 @@ If you run `tmux` and then `claude-fzf`, the tool will repurpose that "scratch" 
 
 When running outside tmux, Claude resumes directly in your current terminal.
 
-### Configuring Tmux Windows
-
-You can customize the additional windows that are created alongside the `claude` window.
+### Configuration
 
 Config file location: `~/.config/claude-fzf/config.yaml`
 
 ```yaml
+# Optional: base directory for new projects (Ctrl-N)
+# If set, prompts for project name only; otherwise prompts for full path
+projects_dir: ~/projects
+
 tmux:
   windows:
     - name: logs
@@ -101,7 +117,7 @@ tmux:
       command: make run
 ```
 
-Each window can optionally run a command on startup. Commands run silently and the shell stays alive after the command exits.
+**Tmux windows:** You can customize the additional windows created alongside the `claude` window. Each window can optionally run a command on startup. Commands run silently and the shell stays alive after the command exits.
 
 **Default windows** (when no config exists): `logs`, `edit`, `scratch`
 
@@ -123,8 +139,9 @@ Claude Code stores session data in `~/.claude/projects/`. Each project directory
 
 1. Scans all session files in parallel
 2. Caches metadata (invalidated by file mtime)
-3. Presents an interactive fuzzy finder
-4. Runs `claude --resume <session-id>` on selection
+3. Groups sessions by project, sorted by most recent activity
+4. Presents an interactive picker with two-level navigation
+5. Runs `claude --resume <session-id>` on selection
 
 ## Project Structure
 
