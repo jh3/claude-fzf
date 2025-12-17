@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -30,32 +31,98 @@ type Result struct {
 	ProjectPath string // for ActionNewProject
 }
 
+// ProjectGroup holds sessions grouped by project path
+type ProjectGroup struct {
+	ProjectPath string
+	ProjectName string
+	Sessions    []session.Session
+	LatestMod   string // formatted date of most recent session
+}
+
 // pickerModel is the bubbletea model for the session picker
 type pickerModel struct {
-	allSessions      []session.Session
-	filteredSessions []session.Session
-	cursor           int
+	// Data
+	allSessions []session.Session
+	projects    []ProjectGroup
+
+	// View state
+	mode             string // "projects", "sessions", "newproject"
+	projectCursor    int
+	sessionCursor    int
+	selectedProject  *ProjectGroup
 	filter           textinput.Model
 	showEmpty        bool
-	width            int
-	height           int
-	result           Result
-	confirmDelete    bool
-	quitting         bool
-	newProjectMode   bool     // are we in new project path entry mode?
-	projectsDir      string   // base directory from config (may be empty)
-	existingDirs     []string // directories in projectsDir (for new project mode)
+
+	// Filtered views
+	filteredProjects []ProjectGroup
+	filteredSessions []session.Session
+
+	// Layout
+	width  int
+	height int
+
+	// Actions
+	result        Result
+	confirmDelete bool
+	quitting      bool
+
+	// New project mode
+	projectsDir  string
+	existingDirs []string
 }
 
 // Styles
 var (
-	selectedStyle   = lipgloss.NewStyle().Background(lipgloss.Color("240")).Foreground(lipgloss.Color("229"))
-	cursorStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
-	dimStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	helpStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	previewHeader   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
-	confirmStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
+	selectedStyle = lipgloss.NewStyle().Background(lipgloss.Color("240")).Foreground(lipgloss.Color("229"))
+	cursorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
+	dimStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	helpStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	previewHeader = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
+	confirmStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
+	countStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 )
+
+func groupSessionsByProject(sessions []session.Session) []ProjectGroup {
+	groups := make(map[string]*ProjectGroup)
+
+	for _, s := range sessions {
+		path := s.ProjectPath
+		if path == "" {
+			path = "(no project)"
+		}
+
+		if g, ok := groups[path]; ok {
+			g.Sessions = append(g.Sessions, s)
+		} else {
+			name := filepath.Base(path)
+			if name == "" || name == "." {
+				name = "(no project)"
+			}
+			groups[path] = &ProjectGroup{
+				ProjectPath: path,
+				ProjectName: name,
+				Sessions:    []session.Session{s},
+			}
+		}
+	}
+
+	// Convert to slice and sort each group's sessions by ModTime
+	var result []ProjectGroup
+	for _, g := range groups {
+		sort.Slice(g.Sessions, func(i, j int) bool {
+			return g.Sessions[i].ModTime.After(g.Sessions[j].ModTime)
+		})
+		g.LatestMod = g.Sessions[0].ModTime.Format("01/02 15:04")
+		result = append(result, *g)
+	}
+
+	// Sort groups by most recent session
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Sessions[0].ModTime.After(result[j].Sessions[0].ModTime)
+	})
+
+	return result
+}
 
 func newPickerModel(sessions []session.Session, showEmpty bool, projectsDir string) pickerModel {
 	ti := textinput.New()
@@ -68,38 +135,71 @@ func newPickerModel(sessions []session.Session, showEmpty bool, projectsDir stri
 		allSessions: sessions,
 		filter:      ti,
 		showEmpty:   showEmpty,
+		mode:        "projects",
 		width:       80,
 		height:      24,
 		projectsDir: projectsDir,
 	}
-	m.applyFilter()
+	m.rebuildProjects()
+	m.applyProjectFilter()
 	return m
 }
 
-func (m *pickerModel) applyFilter() {
-	query := strings.ToLower(m.filter.Value())
-	m.filteredSessions = nil
-
+func (m *pickerModel) rebuildProjects() {
+	// Filter sessions by showEmpty first
+	var filtered []session.Session
 	for _, s := range m.allSessions {
-		// Filter by showEmpty
 		if !m.showEmpty && s.UserMsgCount == 0 && s.AsstMsgCount == 0 {
 			continue
 		}
+		filtered = append(filtered, s)
+	}
+	m.projects = groupSessionsByProject(filtered)
+}
 
-		// Filter by search query
+func (m *pickerModel) applyProjectFilter() {
+	query := strings.ToLower(m.filter.Value())
+	m.filteredProjects = nil
+
+	for _, p := range m.projects {
 		if query != "" {
-			searchText := strings.ToLower(s.ProjectPath + " " + s.Summary + " " + s.GitBranch)
+			searchText := strings.ToLower(p.ProjectPath + " " + p.ProjectName)
+			// Also search session summaries and branches
+			for _, s := range p.Sessions {
+				searchText += " " + strings.ToLower(s.Summary+" "+s.GitBranch)
+			}
 			if !strings.Contains(searchText, query) {
 				continue
 			}
 		}
+		m.filteredProjects = append(m.filteredProjects, p)
+	}
 
+	if m.projectCursor >= len(m.filteredProjects) {
+		m.projectCursor = max(0, len(m.filteredProjects)-1)
+	}
+}
+
+func (m *pickerModel) applySessionFilter() {
+	if m.selectedProject == nil {
+		return
+	}
+
+	query := strings.ToLower(m.filter.Value())
+	m.filteredSessions = nil
+
+	for _, s := range m.selectedProject.Sessions {
+		if query != "" {
+			searchText := strings.ToLower(s.Summary + " " + s.GitBranch)
+			if !strings.Contains(searchText, query) {
+				continue
+			}
+		}
 		m.filteredSessions = append(m.filteredSessions, s)
 	}
 
-	// Reset cursor if out of bounds
-	if m.cursor >= len(m.filteredSessions) {
-		m.cursor = max(0, len(m.filteredSessions)-1)
+	if m.sessionCursor >= len(m.filteredSessions) {
+		m.sessionCursor = max(0, len(m.filteredSessions)-1)
 	}
 }
 
@@ -114,9 +214,8 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.confirmDelete {
 			switch msg.String() {
 			case "y", "Y":
-				if len(m.filteredSessions) > 0 {
-					// Delete the file
-					sess := m.filteredSessions[m.cursor]
+				if m.mode == "sessions" && len(m.filteredSessions) > 0 {
+					sess := m.filteredSessions[m.sessionCursor]
 					os.Remove(sess.FilePath)
 
 					// Remove from allSessions
@@ -127,8 +226,25 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 
-					// Reapply filter to update filteredSessions
-					m.applyFilter()
+					// Rebuild and refilter
+					m.rebuildProjects()
+
+					// Update selected project reference
+					for i := range m.filteredProjects {
+						if m.filteredProjects[i].ProjectPath == m.selectedProject.ProjectPath {
+							m.selectedProject = &m.filteredProjects[i]
+							break
+						}
+					}
+
+					// If project has no more sessions, go back to project view
+					if m.selectedProject == nil || len(m.selectedProject.Sessions) == 0 {
+						m.mode = "projects"
+						m.selectedProject = nil
+						m.applyProjectFilter()
+					} else {
+						m.applySessionFilter()
+					}
 				}
 				m.confirmDelete = false
 				return m, nil
@@ -140,18 +256,29 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case "ctrl+c", "esc":
-			if m.newProjectMode {
-				m.newProjectMode = false
+		case "ctrl+c":
+			m.quitting = true
+			return m, tea.Quit
+
+		case "esc":
+			if m.mode == "newproject" {
+				m.mode = "projects"
 				m.filter.SetValue("")
 				m.filter.Placeholder = "Filter..."
+				return m, nil
+			}
+			if m.mode == "sessions" {
+				m.mode = "projects"
+				m.selectedProject = nil
+				m.filter.SetValue("")
+				m.applyProjectFilter()
 				return m, nil
 			}
 			m.quitting = true
 			return m, tea.Quit
 
 		case "enter":
-			if m.newProjectMode {
+			if m.mode == "newproject" {
 				path := m.filter.Value()
 				if path != "" {
 					m.result = Result{
@@ -163,17 +290,40 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			}
-			if len(m.filteredSessions) > 0 {
+			if m.mode == "projects" && len(m.filteredProjects) > 0 {
+				// Quick resume: resume most recent session in project
+				p := m.filteredProjects[m.projectCursor]
 				m.result = Result{
-					Session: &m.filteredSessions[m.cursor],
+					Session: &p.Sessions[0],
 					Action:  ActionResume,
 				}
+				m.quitting = true
+				return m, tea.Quit
 			}
-			m.quitting = true
-			return m, tea.Quit
+			if m.mode == "sessions" && len(m.filteredSessions) > 0 {
+				m.result = Result{
+					Session: &m.filteredSessions[m.sessionCursor],
+					Action:  ActionResume,
+				}
+				m.quitting = true
+				return m, tea.Quit
+			}
+			return m, nil
+
+		case "tab":
+			if m.mode == "projects" && len(m.filteredProjects) > 0 {
+				// Expand into project's sessions
+				m.selectedProject = &m.filteredProjects[m.projectCursor]
+				m.filteredSessions = m.selectedProject.Sessions
+				m.sessionCursor = 0
+				m.mode = "sessions"
+				m.filter.SetValue("")
+				return m, nil
+			}
+			return m, nil
 
 		case "ctrl+n":
-			m.newProjectMode = true
+			m.mode = "newproject"
 			m.filter.SetValue("")
 			m.loadExistingDirs()
 			if m.projectsDir != "" {
@@ -185,42 +335,74 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "ctrl+d":
-			if len(m.filteredSessions) > 0 {
+			if m.mode == "sessions" && len(m.filteredSessions) > 0 {
 				m.confirmDelete = true
 			}
 			return m, nil
 
 		case "ctrl+a":
 			m.showEmpty = !m.showEmpty
-			m.applyFilter()
+			m.rebuildProjects()
+			if m.mode == "projects" {
+				m.applyProjectFilter()
+			} else if m.mode == "sessions" {
+				// Update selected project reference
+				for i := range m.projects {
+					if m.projects[i].ProjectPath == m.selectedProject.ProjectPath {
+						m.selectedProject = &m.projects[i]
+						break
+					}
+				}
+				m.applySessionFilter()
+			}
 			return m, nil
 
 		case "up", "ctrl+p":
-			if m.cursor > 0 {
-				m.cursor--
+			if m.mode == "projects" && m.projectCursor > 0 {
+				m.projectCursor--
+			} else if m.mode == "sessions" && m.sessionCursor > 0 {
+				m.sessionCursor--
 			}
 			return m, nil
 
 		case "down":
-			if m.cursor < len(m.filteredSessions)-1 {
-				m.cursor++
+			if m.mode == "projects" && m.projectCursor < len(m.filteredProjects)-1 {
+				m.projectCursor++
+			} else if m.mode == "sessions" && m.sessionCursor < len(m.filteredSessions)-1 {
+				m.sessionCursor++
 			}
 			return m, nil
 
 		case "pgup":
-			m.cursor = max(0, m.cursor-10)
+			if m.mode == "projects" {
+				m.projectCursor = max(0, m.projectCursor-10)
+			} else if m.mode == "sessions" {
+				m.sessionCursor = max(0, m.sessionCursor-10)
+			}
 			return m, nil
 
 		case "pgdown":
-			m.cursor = min(len(m.filteredSessions)-1, m.cursor+10)
+			if m.mode == "projects" {
+				m.projectCursor = min(len(m.filteredProjects)-1, m.projectCursor+10)
+			} else if m.mode == "sessions" {
+				m.sessionCursor = min(len(m.filteredSessions)-1, m.sessionCursor+10)
+			}
 			return m, nil
 
 		case "home", "ctrl+home":
-			m.cursor = 0
+			if m.mode == "projects" {
+				m.projectCursor = 0
+			} else if m.mode == "sessions" {
+				m.sessionCursor = 0
+			}
 			return m, nil
 
 		case "end", "ctrl+end":
-			m.cursor = max(0, len(m.filteredSessions)-1)
+			if m.mode == "projects" {
+				m.projectCursor = max(0, len(m.filteredProjects)-1)
+			} else if m.mode == "sessions" {
+				m.sessionCursor = max(0, len(m.filteredSessions)-1)
+			}
 			return m, nil
 		}
 
@@ -234,7 +416,11 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Handle text input for filtering
 	var cmd tea.Cmd
 	m.filter, cmd = m.filter.Update(msg)
-	m.applyFilter()
+	if m.mode == "projects" {
+		m.applyProjectFilter()
+	} else if m.mode == "sessions" {
+		m.applySessionFilter()
+	}
 	return m, cmd
 }
 
@@ -245,20 +431,31 @@ func (m pickerModel) View() string {
 
 	var b strings.Builder
 
-	// Header with filter
-	if m.newProjectMode {
+	// Header
+	switch m.mode {
+	case "newproject":
 		header := "New Project"
 		if m.projectsDir != "" {
 			header += fmt.Sprintf(" (in %s)", m.projectsDir)
 		}
 		b.WriteString(fmt.Sprintf("%s %s\n\n", header, m.filter.View()))
-	} else {
+	case "sessions":
 		emptyIndicator := ""
 		if m.showEmpty {
 			emptyIndicator = " [+empty]"
 		}
-		b.WriteString(fmt.Sprintf("Sessions %d/%d%s %s\n\n",
-			len(m.filteredSessions), len(m.allSessions), emptyIndicator, m.filter.View()))
+		b.WriteString(fmt.Sprintf("← %s (%d sessions)%s %s\n\n",
+			m.selectedProject.ProjectName,
+			len(m.filteredSessions),
+			emptyIndicator,
+			m.filter.View()))
+	default: // projects
+		emptyIndicator := ""
+		if m.showEmpty {
+			emptyIndicator = " [+empty]"
+		}
+		b.WriteString(fmt.Sprintf("Projects %d%s %s\n\n",
+			len(m.filteredProjects), emptyIndicator, m.filter.View()))
 	}
 
 	// Calculate layout
@@ -269,91 +466,178 @@ func (m pickerModel) View() string {
 	var listLines []string
 	var previewLines []string
 
-	if m.newProjectMode {
-		// Build existing directories list
-		contentWidth := listWidth - 2
-
-		for i := 0; i < len(m.existingDirs) && i < listHeight; i++ {
-			line := fixedWidth("  "+m.existingDirs[i], contentWidth+2)
-			listLines = append(listLines, line)
-		}
-
-		// Pad list to full height
-		emptyLine := strings.Repeat(" ", listWidth)
-		for len(listLines) < listHeight {
-			listLines = append(listLines, emptyLine)
-		}
-
-		// Build creation preview
-		previewLines = m.formatNewProjectPreview(previewWidth)
-	} else {
-		// Build session list
-		visibleStart := 0
-		if m.cursor >= listHeight {
-			visibleStart = m.cursor - listHeight + 1
-		}
-
-		// Fixed content width (excluding cursor prefix "  " or "> ")
-		contentWidth := listWidth - 2
-
-		for i := visibleStart; i < len(m.filteredSessions) && i < visibleStart+listHeight; i++ {
-			s := m.filteredSessions[i]
-			// Format and pad to fixed width BEFORE applying styles
-			line := formatSessionLine(s, contentWidth)
-			line = fixedWidth(line, contentWidth)
-
-			if i == m.cursor {
-				line = cursorStyle.Render("> ") + selectedStyle.Render(line)
-			} else {
-				line = "  " + line
-			}
-			listLines = append(listLines, line)
-		}
-
-		// Pad list to full height with fixed-width empty lines
-		emptyLine := strings.Repeat(" ", listWidth)
-		for len(listLines) < listHeight {
-			listLines = append(listLines, emptyLine)
-		}
-
-		// Build preview
-		if len(m.filteredSessions) > 0 && m.cursor < len(m.filteredSessions) {
-			previewLines = formatPreviewLines(m.filteredSessions[m.cursor], previewWidth)
-		}
+	switch m.mode {
+	case "newproject":
+		listLines, previewLines = m.renderNewProjectMode(listWidth, previewWidth, listHeight)
+	case "sessions":
+		listLines, previewLines = m.renderSessionsMode(listWidth, previewWidth, listHeight)
+	default:
+		listLines, previewLines = m.renderProjectsMode(listWidth, previewWidth, listHeight)
 	}
 
-	// Pad preview to full height
+	// Pad to full height
+	emptyLine := strings.Repeat(" ", listWidth)
+	for len(listLines) < listHeight {
+		listLines = append(listLines, emptyLine)
+	}
 	for len(previewLines) < listHeight {
 		previewLines = append(previewLines, "")
 	}
 
 	// Combine list and preview side by side
 	for i := 0; i < listHeight; i++ {
-		listLine := listLines[i]
-		previewLine := ""
-		if i < len(previewLines) {
-			previewLine = previewLines[i]
-		}
-		b.WriteString(fmt.Sprintf("%s │ %s\n", listLine, previewLine))
+		b.WriteString(fmt.Sprintf("%s │ %s\n", listLines[i], previewLines[i]))
 	}
 
-	// Footer with help
+	// Footer
 	b.WriteString("\n")
 	if m.confirmDelete {
 		b.WriteString(confirmStyle.Render("Delete this session? (y/n)"))
-	} else if m.newProjectMode {
-		b.WriteString(helpStyle.Render("enter: create • esc: cancel"))
 	} else {
-		b.WriteString(helpStyle.Render("enter: resume • ctrl-d: delete • ctrl-a: toggle empty • ctrl-n: new • esc: quit"))
+		switch m.mode {
+		case "newproject":
+			b.WriteString(helpStyle.Render("enter: create • esc: cancel"))
+		case "sessions":
+			b.WriteString(helpStyle.Render("enter: resume • ctrl-d: delete • ctrl-a: toggle empty • esc: back"))
+		default:
+			b.WriteString(helpStyle.Render("enter: resume • tab: expand • ctrl-a: toggle empty • ctrl-n: new • esc: quit"))
+		}
 	}
 
 	return b.String()
 }
 
+func (m *pickerModel) renderProjectsMode(listWidth, previewWidth, listHeight int) ([]string, []string) {
+	var listLines []string
+	contentWidth := listWidth - 2
+
+	visibleStart := 0
+	if m.projectCursor >= listHeight {
+		visibleStart = m.projectCursor - listHeight + 1
+	}
+
+	for i := visibleStart; i < len(m.filteredProjects) && i < visibleStart+listHeight; i++ {
+		p := m.filteredProjects[i]
+		line := formatProjectLine(p, contentWidth)
+		line = fixedWidth(line, contentWidth)
+
+		if i == m.projectCursor {
+			line = cursorStyle.Render("> ") + selectedStyle.Render(line)
+		} else {
+			line = "  " + line
+		}
+		listLines = append(listLines, line)
+	}
+
+	// Preview
+	var previewLines []string
+	if len(m.filteredProjects) > 0 && m.projectCursor < len(m.filteredProjects) {
+		previewLines = formatProjectPreview(m.filteredProjects[m.projectCursor], previewWidth)
+	}
+
+	return listLines, previewLines
+}
+
+func (m *pickerModel) renderSessionsMode(listWidth, previewWidth, listHeight int) ([]string, []string) {
+	var listLines []string
+	contentWidth := listWidth - 2
+
+	visibleStart := 0
+	if m.sessionCursor >= listHeight {
+		visibleStart = m.sessionCursor - listHeight + 1
+	}
+
+	for i := visibleStart; i < len(m.filteredSessions) && i < visibleStart+listHeight; i++ {
+		s := m.filteredSessions[i]
+		line := formatSessionLine(s, contentWidth)
+		line = fixedWidth(line, contentWidth)
+
+		if i == m.sessionCursor {
+			line = cursorStyle.Render("> ") + selectedStyle.Render(line)
+		} else {
+			line = "  " + line
+		}
+		listLines = append(listLines, line)
+	}
+
+	// Preview
+	var previewLines []string
+	if len(m.filteredSessions) > 0 && m.sessionCursor < len(m.filteredSessions) {
+		previewLines = formatSessionPreview(m.filteredSessions[m.sessionCursor], previewWidth)
+	}
+
+	return listLines, previewLines
+}
+
+func (m *pickerModel) renderNewProjectMode(listWidth, previewWidth, listHeight int) ([]string, []string) {
+	var listLines []string
+	contentWidth := listWidth - 2
+
+	for i := 0; i < len(m.existingDirs) && i < listHeight; i++ {
+		line := fixedWidth("  "+m.existingDirs[i], contentWidth+2)
+		listLines = append(listLines, line)
+	}
+
+	previewLines := m.formatNewProjectPreview(previewWidth)
+	return listLines, previewLines
+}
+
+func formatProjectLine(p ProjectGroup, maxWidth int) string {
+	sessionCount := len(p.Sessions)
+	countStr := fmt.Sprintf("%d", sessionCount)
+	if sessionCount == 1 {
+		countStr = "1"
+	}
+
+	// Format: "project-name        3   01/15 14:23"
+	line := fmt.Sprintf("%-20s %3s   %s", truncate(p.ProjectName, 20), countStr, p.LatestMod)
+	if len(line) > maxWidth {
+		line = line[:maxWidth-1] + "…"
+	}
+	return line
+}
+
+func formatProjectPreview(p ProjectGroup, width int) []string {
+	var lines []string
+
+	lines = append(lines, previewHeader.Render("Project: ")+p.ProjectName)
+	lines = append(lines, previewHeader.Render("Path: ")+p.ProjectPath)
+	lines = append(lines, "")
+	lines = append(lines, previewHeader.Render("Recent Sessions:"))
+
+	// Show up to 5 recent sessions
+	for i, s := range p.Sessions {
+		if i >= 5 {
+			lines = append(lines, dimStyle.Render(fmt.Sprintf("  ... and %d more", len(p.Sessions)-5)))
+			break
+		}
+		branch := s.GitBranch
+		if branch == "" {
+			branch = "-"
+		}
+		summary := s.Summary
+		if summary == "" {
+			summary = "(no summary)"
+		}
+		// Truncate summary to fit
+		maxSummary := width - 25
+		if len(summary) > maxSummary {
+			summary = summary[:maxSummary-1] + "…"
+		}
+		line := fmt.Sprintf("  %s  %-12s  %s", s.ModTime.Format("01/02 15:04"), truncate(branch, 12), summary)
+		lines = append(lines, line)
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, dimStyle.Render("Enter: resume latest • Tab: see all sessions"))
+
+	return lines
+}
+
 func formatSessionLine(s session.Session, maxWidth int) string {
-	projectName := filepath.Base(s.ProjectPath)
-	if projectName == "" || projectName == "." {
-		projectName = "(no project)"
+	branch := s.GitBranch
+	if branch == "" {
+		branch = "-"
 	}
 
 	date := s.ModTime.Format("01/02 15:04")
@@ -362,15 +646,14 @@ func formatSessionLine(s session.Session, maxWidth int) string {
 		summary = "(no summary)"
 	}
 
-	// Truncate to fit
-	line := fmt.Sprintf("%s  %-18s  %s", date, truncate(projectName, 18), summary)
+	line := fmt.Sprintf("%s  %-14s  %s", date, truncate(branch, 14), summary)
 	if len(line) > maxWidth {
 		line = line[:maxWidth-1] + "…"
 	}
 	return line
 }
 
-func formatPreviewLines(s session.Session, width int) []string {
+func formatSessionPreview(s session.Session, width int) []string {
 	var lines []string
 
 	lines = append(lines, previewHeader.Render("Session: ")+s.ID)
@@ -379,7 +662,6 @@ func formatPreviewLines(s session.Session, width int) []string {
 
 	if s.Summary != "" && s.Summary != "(no summary)" {
 		lines = append(lines, previewHeader.Render("Summary:"))
-		// Word wrap summary
 		wrapped := wordWrap(s.Summary, width)
 		lines = append(lines, wrapped...)
 		lines = append(lines, "")
@@ -415,10 +697,9 @@ func (m *pickerModel) formatNewProjectPreview(width int) []string {
 	lines = append(lines, "  • Initialize git repo")
 	lines = append(lines, "  • Start Claude session")
 
-	// Check if path already exists
 	if _, err := os.Stat(fullPath); err == nil {
 		lines = append(lines, "")
-		lines = append(lines, confirmStyle.Render("⚠ Path already exists!"))
+		lines = append(lines, confirmStyle.Render("Warning: Path already exists!"))
 	}
 
 	return lines
@@ -431,9 +712,7 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen-1] + "…"
 }
 
-// fixedWidth ensures a string is exactly the given width (truncate or pad)
 func fixedWidth(s string, width int) string {
-	// Handle runes properly for unicode
 	runes := []rune(s)
 	if len(runes) > width {
 		return string(runes[:width-1]) + "…"
@@ -466,12 +745,10 @@ func wordWrap(s string, width int) []string {
 }
 
 func (m *pickerModel) expandPath(input string) string {
-	// If projectsDir is set, prepend it
 	if m.projectsDir != "" {
 		input = filepath.Join(m.projectsDir, input)
 	}
 
-	// Expand ~
 	if strings.HasPrefix(input, "~/") {
 		home, _ := os.UserHomeDir()
 		input = filepath.Join(home, input[2:])
@@ -483,14 +760,12 @@ func (m *pickerModel) expandPath(input string) string {
 func (m *pickerModel) loadExistingDirs() {
 	m.existingDirs = nil
 
-	// Determine which directory to list
 	dir := m.projectsDir
 	if dir == "" {
 		home, _ := os.UserHomeDir()
 		dir = home
 	}
 
-	// Expand ~ if present
 	if strings.HasPrefix(dir, "~/") {
 		home, _ := os.UserHomeDir()
 		dir = filepath.Join(home, dir[2:])

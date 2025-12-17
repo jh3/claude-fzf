@@ -3,6 +3,7 @@ package tmux
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -10,6 +11,16 @@ import (
 	"github.com/GianlucaP106/gotmux/gotmux"
 	"github.com/jh3/claude-fzf/internal/config"
 )
+
+// runTmux runs a tmux command directly (bypasses gotmux for reliability)
+func runTmux(args ...string) error {
+	cmd := exec.Command("tmux", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, string(out))
+	}
+	return nil
+}
 
 // Manager handles tmux operations
 type Manager struct {
@@ -77,6 +88,7 @@ func (m *Manager) IsDisposableSession() (bool, string) {
 }
 
 // RepurposeCurrentSession renames the current session and adds project windows
+// Uses direct exec.Command for reliability
 func (m *Manager) RepurposeCurrentSession(newName, projectPath string, windows []config.Window) error {
 	if len(windows) == 0 {
 		return fmt.Errorf("no windows configured")
@@ -88,94 +100,84 @@ func (m *Manager) RepurposeCurrentSession(newName, projectPath string, windows [
 	}
 
 	// Rename the session
-	_, err = m.tmux.Command("rename-session", "-t", currentName, newName)
-	if err != nil {
+	if err := runTmux("rename-session", "-t", currentName, newName); err != nil {
 		return fmt.Errorf("failed to rename session: %w", err)
 	}
 
-	// Get the session
-	sess, err := m.tmux.GetSessionByName(newName)
-	if err != nil {
-		return fmt.Errorf("failed to get renamed session: %w", err)
-	}
+	// Get current window name (claude-fzf is running here)
+	cmd := exec.Command("tmux", "display-message", "-p", "#{window_name}")
+	out, _ := cmd.Output()
+	currentWindowName := strings.TrimSpace(string(out))
 
-	// Find a window to rename to "claude" - prefer one that's not the current window
-	existingWindows, err := sess.ListWindows()
+	// List existing windows
+	cmd = exec.Command("tmux", "list-windows", "-t", newName, "-F", "#{window_name}")
+	out, err = cmd.Output()
 	if err != nil {
 		return fmt.Errorf("failed to list windows: %w", err)
 	}
+
+	existingWindows := strings.Split(strings.TrimSpace(string(out)), "\n")
 	if len(existingWindows) == 0 {
 		return fmt.Errorf("no windows in session")
 	}
 
-	// Get the current window name so we can avoid it
-	currentWindowOutput, _ := m.tmux.Command("display-message", "-p", "#{window_name}")
-	currentWindowName := strings.TrimSpace(currentWindowOutput)
-
-	// Find a window that's not the current one (claude-fzf is likely running there)
-	var windowToRename *gotmux.Window
-	for i := range existingWindows {
-		if existingWindows[i].Name != currentWindowName {
-			windowToRename = existingWindows[i]
+	// Find a window to rename to "claude" - prefer one that's not the current window
+	windowToRename := ""
+	for _, w := range existingWindows {
+		if w != currentWindowName && w != "" {
+			windowToRename = w
 			break
 		}
 	}
-	// Fallback to first window if all else fails
-	if windowToRename == nil {
+	if windowToRename == "" {
 		windowToRename = existingWindows[0]
 	}
 
-	if err := windowToRename.Rename("claude"); err != nil {
+	// Rename the window to "claude"
+	if err := runTmux("rename-window", "-t", newName+":"+windowToRename, "claude"); err != nil {
 		return fmt.Errorf("failed to rename window to claude: %w", err)
 	}
 
-	// Add the additional windows
-	if err := m.addWindows(sess, newName, projectPath, windows); err != nil {
-		return err
+	// Add the additional windows (use -a to append, avoiding index conflicts)
+	for _, winCfg := range windows {
+		if err := runTmux("new-window", "-a", "-t", newName+":", "-n", winCfg.Name, "-c", projectPath); err != nil {
+			return fmt.Errorf("failed to create window %q: %w", winCfg.Name, err)
+		}
+		if winCfg.Command != "" {
+			m.runWindowCommand(newName, winCfg.Name, winCfg.Command)
+		}
 	}
 
 	// Select the claude window
-	w, err := sess.GetWindowByName("claude")
-	if err != nil {
-		return fmt.Errorf("failed to get claude window: %w", err)
-	}
-	w.Select()
+	runTmux("select-window", "-t", newName+":claude")
 
 	return nil
 }
 
 // CreateProjectSession creates a new tmux session with configured windows
-// If shellCommand is provided, the first window (claude) runs that command
+// Uses direct exec.Command for reliability when running from within tmux
 func (m *Manager) CreateProjectSession(name, projectPath, shellCommand string, windows []config.Window) error {
 	if len(windows) == 0 {
 		return fmt.Errorf("no windows configured")
 	}
 
-	sess, err := m.tmux.NewSession(&gotmux.SessionOptions{
-		Name:           name,
-		StartDirectory: projectPath,
-		ShellCommand:   shellCommand,
-	})
-	if err != nil {
+	// Create detached session with first window named "claude"
+	if err := runTmux("new-session", "-d", "-s", name, "-n", "claude", "-c", projectPath); err != nil {
 		return fmt.Errorf("failed to create session: %w", err)
 	}
 
-	// Rename the first window to "claude"
-	existingWindows, err := sess.ListWindows()
-	if err == nil && len(existingWindows) > 0 {
-		existingWindows[0].Rename("claude")
-	}
-
-	// Create additional windows from config
-	if err := m.addWindows(sess, name, projectPath, windows); err != nil {
-		return err
+	// Create additional windows (use -a to append, avoiding index conflicts)
+	for _, winCfg := range windows {
+		if err := runTmux("new-window", "-a", "-t", name+":", "-n", winCfg.Name, "-c", projectPath); err != nil {
+			return fmt.Errorf("failed to create window %q: %w", winCfg.Name, err)
+		}
+		if winCfg.Command != "" {
+			m.runWindowCommand(name, winCfg.Name, winCfg.Command)
+		}
 	}
 
 	// Select the claude window
-	w, err := sess.GetWindowByName("claude")
-	if err == nil {
-		w.Select()
-	}
+	runTmux("select-window", "-t", name+":claude")
 
 	return nil
 }
@@ -187,19 +189,45 @@ func (m *Manager) SwitchToSession(name string) error {
 	})
 }
 
-// addWindows creates windows from config and runs their startup commands
-func (m *Manager) addWindows(sess *gotmux.Session, sessionName, projectPath string, windows []config.Window) error {
-	for _, winCfg := range windows {
-		_, err := sess.NewWindow(&gotmux.NewWindowOptions{
-			WindowName:     winCfg.Name,
-			StartDirectory: projectPath,
-		})
-		if err != nil {
-			return fmt.Errorf("failed to create window %q: %w", winCfg.Name, err)
-		}
-		m.runWindowCommand(sessionName, winCfg.Name, winCfg.Command)
+// EnsureSessionWindows ensures a session has the claude window and configured windows
+// Creates any missing windows. Returns true if claude window was created (needs command).
+func (m *Manager) EnsureSessionWindows(name, projectPath string, windows []config.Window) (claudeCreated bool, err error) {
+	// Get current windows in session using exec.Command for reliability
+	cmd := exec.Command("tmux", "list-windows", "-t", name, "-F", "#{window_name}")
+	out, err := cmd.Output()
+	if err != nil {
+		return false, fmt.Errorf("failed to list windows: %w", err)
 	}
-	return nil
+	output := string(out)
+
+	existing := make(map[string]bool)
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		if line != "" {
+			existing[line] = true
+		}
+	}
+
+	// Ensure claude window exists
+	if !existing["claude"] {
+		if err := runTmux("new-window", "-a", "-t", name+":", "-n", "claude", "-c", projectPath); err != nil {
+			return false, fmt.Errorf("failed to create claude window: %w", err)
+		}
+		claudeCreated = true
+	}
+
+	// Ensure configured windows exist (use -a to append, avoiding index conflicts)
+	for _, winCfg := range windows {
+		if !existing[winCfg.Name] {
+			if err := runTmux("new-window", "-a", "-t", name+":", "-n", winCfg.Name, "-c", projectPath); err != nil {
+				return claudeCreated, fmt.Errorf("failed to create window %q: %w", winCfg.Name, err)
+			}
+			if winCfg.Command != "" {
+				m.runWindowCommand(name, winCfg.Name, winCfg.Command)
+			}
+		}
+	}
+
+	return claudeCreated, nil
 }
 
 // runWindowCommand runs a command in a window, keeping the shell alive after

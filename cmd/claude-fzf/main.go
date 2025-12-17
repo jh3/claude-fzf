@@ -127,7 +127,8 @@ func resumeInTmux(s *session.Session) {
 
 	if !mgr.SessionExists(sessionName) {
 		// Check if we can repurpose the current session
-		if disposable, _ := mgr.IsDisposableSession(); disposable {
+		disposable, _ := mgr.IsDisposableSession()
+		if disposable {
 			if err := mgr.RepurposeCurrentSession(sessionName, s.ProjectPath, cfg.Tmux.Windows); err != nil {
 				fmt.Fprintf(os.Stderr, "Error repurposing session: %v\n", err)
 				os.Exit(1)
@@ -151,6 +152,12 @@ func resumeInTmux(s *session.Session) {
 			fmt.Fprintf(os.Stderr, "Error creating tmux session: %v\n", err)
 			os.Exit(1)
 		}
+	} else {
+		// Session exists - ensure it has all required windows (fixes partially created sessions)
+		if _, err := mgr.EnsureSessionWindows(sessionName, s.ProjectPath, cfg.Tmux.Windows); err != nil {
+			fmt.Fprintf(os.Stderr, "Error ensuring windows: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	if err := mgr.SwitchToSession(sessionName); err != nil {
@@ -158,10 +165,15 @@ func resumeInTmux(s *session.Session) {
 		os.Exit(1)
 	}
 
-	if err := mgr.RespawnWindow(sessionName, "claude", claudeCmd); err != nil {
+	// Wrap command to keep pane alive if claude exits
+	wrappedCmd := fmt.Sprintf("cd %q && %s; exec $SHELL", s.ProjectPath, claudeCmd)
+	if err := mgr.RespawnWindow(sessionName, "claude", wrappedCmd); err != nil {
 		fmt.Fprintf(os.Stderr, "Error respawning window: %v\n", err)
 		os.Exit(1)
 	}
+
+	// Ensure we're on the claude window
+	mgr.SelectWindow(sessionName, "claude")
 }
 
 func resumeDirectly(s *session.Session) {
