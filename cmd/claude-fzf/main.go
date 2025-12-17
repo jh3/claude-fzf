@@ -64,6 +64,7 @@ Keybindings (in picker):
   Enter         Resume selected session
   Ctrl-D        Delete selected session (with confirmation)
   Ctrl-A        Toggle showing empty sessions
+  Ctrl-N        Create new project
   Ctrl-C/Esc    Cancel
 
 Tmux Integration:
@@ -89,17 +90,21 @@ func runInteractive(showAll bool) {
 	cfg = config.Load()
 	sessions := loadAllSessions()
 
-	result, err := ui.SelectSession(sessions, showAll)
+	result, err := ui.SelectSession(sessions, showAll, cfg.ProjectsDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 
-	if result.Session == nil || result.Action != ui.ActionResume {
-		return // User cancelled or performed other action
+	switch result.Action {
+	case ui.ActionNewProject:
+		createNewProject(result.ProjectPath)
+	case ui.ActionResume:
+		if result.Session != nil {
+			resumeSession(result.Session)
+		}
 	}
-
-	resumeSession(result.Session)
+	// ActionNone and ActionDelete don't need handling here
 }
 
 func resumeSession(s *session.Session) {
@@ -169,6 +174,90 @@ func resumeDirectly(s *session.Session) {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Run()
+}
+
+func createNewProject(projectPath string) {
+	// Check if path already exists
+	if _, err := os.Stat(projectPath); err == nil {
+		fmt.Fprintf(os.Stderr, "Error: %s already exists\n", projectPath)
+		os.Exit(1)
+	}
+
+	// Create directory
+	if err := os.MkdirAll(projectPath, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Initialize git repo
+	gitInit := exec.Command("git", "init")
+	gitInit.Dir = projectPath
+	if err := gitInit.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error initializing git: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Launch claude
+	if tmux.IsInsideTmux() {
+		createProjectInTmux(projectPath)
+	} else {
+		createProjectDirectly(projectPath)
+	}
+}
+
+func createProjectDirectly(projectPath string) {
+	os.Chdir(projectPath)
+	cmd := exec.Command("claude")
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Run()
+}
+
+func createProjectInTmux(projectPath string) {
+	mgr, err := tmux.New()
+	if err != nil {
+		createProjectDirectly(projectPath)
+		return
+	}
+
+	sessionName := tmux.ProjectToSessionName(projectPath)
+
+	// Check if we can repurpose the current session
+	if disposable, _ := mgr.IsDisposableSession(); disposable {
+		if err := mgr.RepurposeCurrentSession(sessionName, projectPath, cfg.Tmux.Windows); err != nil {
+			fmt.Fprintf(os.Stderr, "Error repurposing session: %v\n", err)
+			os.Exit(1)
+		}
+		// Respawn claude window with fresh claude (no --resume)
+		wrappedCmd := fmt.Sprintf("cd %q && claude; exec $SHELL", projectPath)
+		if err := mgr.RespawnWindow(sessionName, "claude", wrappedCmd); err != nil {
+			fmt.Fprintf(os.Stderr, "Error respawning window: %v\n", err)
+			os.Exit(1)
+		}
+		if err := mgr.SelectWindow(sessionName, "claude"); err != nil {
+			fmt.Fprintf(os.Stderr, "Error selecting window: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Create a new tmux session
+	if err := mgr.CreateProjectSession(sessionName, projectPath, "", cfg.Tmux.Windows); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating tmux session: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := mgr.SwitchToSession(sessionName); err != nil {
+		fmt.Fprintf(os.Stderr, "Error switching to session: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Run claude in the claude window
+	if err := mgr.RespawnWindow(sessionName, "claude", "claude"); err != nil {
+		fmt.Fprintf(os.Stderr, "Error starting claude: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func loadAllSessions() []session.Session {

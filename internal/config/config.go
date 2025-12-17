@@ -20,7 +20,8 @@ type Tmux struct {
 
 // Config holds all configuration options
 type Config struct {
-	Tmux Tmux `yaml:"tmux"`
+	ProjectsDir string `yaml:"projects_dir,omitempty"`
+	Tmux        Tmux   `yaml:"tmux"`
 }
 
 // DefaultConfig returns the default configuration

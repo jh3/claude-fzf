@@ -1,6 +1,11 @@
 # claude-fzf configuration
 # Copy to: ~/.config/claude-fzf/config.yaml
 
+# Optional: base directory for new projects
+# If set, Ctrl-N in picker prompts for project name only
+# If not set, prompts for full path (starting from ~)
+# projects_dir: ~/projects
+
 # Tmux window configuration
 # The "claude" window is always created first (not configurable).
 # These are the additional windows created alongside it.

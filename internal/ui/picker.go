@@ -20,12 +20,14 @@ const (
 	ActionNone Action = iota
 	ActionResume
 	ActionDelete
+	ActionNewProject
 )
 
 // Result holds the selected session and action
 type Result struct {
-	Session *session.Session
-	Action  Action
+	Session     *session.Session
+	Action      Action
+	ProjectPath string // for ActionNewProject
 }
 
 // pickerModel is the bubbletea model for the session picker
@@ -40,6 +42,9 @@ type pickerModel struct {
 	result           Result
 	confirmDelete    bool
 	quitting         bool
+	newProjectMode   bool     // are we in new project path entry mode?
+	projectsDir      string   // base directory from config (may be empty)
+	existingDirs     []string // directories in projectsDir (for new project mode)
 }
 
 // Styles
@@ -52,7 +57,7 @@ var (
 	confirmStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
 )
 
-func newPickerModel(sessions []session.Session, showEmpty bool) pickerModel {
+func newPickerModel(sessions []session.Session, showEmpty bool, projectsDir string) pickerModel {
 	ti := textinput.New()
 	ti.Placeholder = "Filter..."
 	ti.Focus()
@@ -65,6 +70,7 @@ func newPickerModel(sessions []session.Session, showEmpty bool) pickerModel {
 		showEmpty:   showEmpty,
 		width:       80,
 		height:      24,
+		projectsDir: projectsDir,
 	}
 	m.applyFilter()
 	return m
@@ -135,10 +141,28 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "ctrl+c", "esc":
+			if m.newProjectMode {
+				m.newProjectMode = false
+				m.filter.SetValue("")
+				m.filter.Placeholder = "Filter..."
+				return m, nil
+			}
 			m.quitting = true
 			return m, tea.Quit
 
 		case "enter":
+			if m.newProjectMode {
+				path := m.filter.Value()
+				if path != "" {
+					m.result = Result{
+						Action:      ActionNewProject,
+						ProjectPath: m.expandPath(path),
+					}
+					m.quitting = true
+					return m, tea.Quit
+				}
+				return m, nil
+			}
 			if len(m.filteredSessions) > 0 {
 				m.result = Result{
 					Session: &m.filteredSessions[m.cursor],
@@ -147,6 +171,18 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.quitting = true
 			return m, tea.Quit
+
+		case "ctrl+n":
+			m.newProjectMode = true
+			m.filter.SetValue("")
+			m.loadExistingDirs()
+			if m.projectsDir != "" {
+				m.filter.Placeholder = "Project name..."
+			} else {
+				m.filter.Placeholder = "Path (e.g. ~/projects/my-app)..."
+				m.filter.SetValue("~/")
+			}
+			return m, nil
 
 		case "ctrl+d":
 			if len(m.filteredSessions) > 0 {
@@ -165,7 +201,7 @@ func (m pickerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 
-		case "down", "ctrl+n":
+		case "down":
 			if m.cursor < len(m.filteredSessions)-1 {
 				m.cursor++
 			}
@@ -210,52 +246,80 @@ func (m pickerModel) View() string {
 	var b strings.Builder
 
 	// Header with filter
-	emptyIndicator := ""
-	if m.showEmpty {
-		emptyIndicator = " [+empty]"
+	if m.newProjectMode {
+		header := "New Project"
+		if m.projectsDir != "" {
+			header += fmt.Sprintf(" (in %s)", m.projectsDir)
+		}
+		b.WriteString(fmt.Sprintf("%s %s\n\n", header, m.filter.View()))
+	} else {
+		emptyIndicator := ""
+		if m.showEmpty {
+			emptyIndicator = " [+empty]"
+		}
+		b.WriteString(fmt.Sprintf("Sessions %d/%d%s %s\n\n",
+			len(m.filteredSessions), len(m.allSessions), emptyIndicator, m.filter.View()))
 	}
-	b.WriteString(fmt.Sprintf("Sessions %d/%d%s %s\n\n",
-		len(m.filteredSessions), len(m.allSessions), emptyIndicator, m.filter.View()))
 
 	// Calculate layout
 	listWidth := m.width / 2
 	previewWidth := m.width - listWidth - 3
 	listHeight := m.height - 6
 
-	// Build session list
 	var listLines []string
-	visibleStart := 0
-	if m.cursor >= listHeight {
-		visibleStart = m.cursor - listHeight + 1
-	}
-
-	// Fixed content width (excluding cursor prefix "  " or "> ")
-	contentWidth := listWidth - 2
-
-	for i := visibleStart; i < len(m.filteredSessions) && i < visibleStart+listHeight; i++ {
-		s := m.filteredSessions[i]
-		// Format and pad to fixed width BEFORE applying styles
-		line := formatSessionLine(s, contentWidth)
-		line = fixedWidth(line, contentWidth)
-
-		if i == m.cursor {
-			line = cursorStyle.Render("> ") + selectedStyle.Render(line)
-		} else {
-			line = "  " + line
-		}
-		listLines = append(listLines, line)
-	}
-
-	// Pad list to full height with fixed-width empty lines
-	emptyLine := strings.Repeat(" ", listWidth)
-	for len(listLines) < listHeight {
-		listLines = append(listLines, emptyLine)
-	}
-
-	// Build preview
 	var previewLines []string
-	if len(m.filteredSessions) > 0 && m.cursor < len(m.filteredSessions) {
-		previewLines = formatPreviewLines(m.filteredSessions[m.cursor], previewWidth)
+
+	if m.newProjectMode {
+		// Build existing directories list
+		contentWidth := listWidth - 2
+
+		for i := 0; i < len(m.existingDirs) && i < listHeight; i++ {
+			line := fixedWidth("  "+m.existingDirs[i], contentWidth+2)
+			listLines = append(listLines, line)
+		}
+
+		// Pad list to full height
+		emptyLine := strings.Repeat(" ", listWidth)
+		for len(listLines) < listHeight {
+			listLines = append(listLines, emptyLine)
+		}
+
+		// Build creation preview
+		previewLines = m.formatNewProjectPreview(previewWidth)
+	} else {
+		// Build session list
+		visibleStart := 0
+		if m.cursor >= listHeight {
+			visibleStart = m.cursor - listHeight + 1
+		}
+
+		// Fixed content width (excluding cursor prefix "  " or "> ")
+		contentWidth := listWidth - 2
+
+		for i := visibleStart; i < len(m.filteredSessions) && i < visibleStart+listHeight; i++ {
+			s := m.filteredSessions[i]
+			// Format and pad to fixed width BEFORE applying styles
+			line := formatSessionLine(s, contentWidth)
+			line = fixedWidth(line, contentWidth)
+
+			if i == m.cursor {
+				line = cursorStyle.Render("> ") + selectedStyle.Render(line)
+			} else {
+				line = "  " + line
+			}
+			listLines = append(listLines, line)
+		}
+
+		// Pad list to full height with fixed-width empty lines
+		emptyLine := strings.Repeat(" ", listWidth)
+		for len(listLines) < listHeight {
+			listLines = append(listLines, emptyLine)
+		}
+
+		// Build preview
+		if len(m.filteredSessions) > 0 && m.cursor < len(m.filteredSessions) {
+			previewLines = formatPreviewLines(m.filteredSessions[m.cursor], previewWidth)
+		}
 	}
 
 	// Pad preview to full height
@@ -277,8 +341,10 @@ func (m pickerModel) View() string {
 	b.WriteString("\n")
 	if m.confirmDelete {
 		b.WriteString(confirmStyle.Render("Delete this session? (y/n)"))
+	} else if m.newProjectMode {
+		b.WriteString(helpStyle.Render("enter: create • esc: cancel"))
 	} else {
-		b.WriteString(helpStyle.Render("enter: resume • ctrl-d: delete • ctrl-a: toggle empty • esc: quit"))
+		b.WriteString(helpStyle.Render("enter: resume • ctrl-d: delete • ctrl-a: toggle empty • ctrl-n: new • esc: quit"))
 	}
 
 	return b.String()
@@ -329,6 +395,35 @@ func formatPreviewLines(s session.Session, width int) []string {
 	return lines
 }
 
+func (m *pickerModel) formatNewProjectPreview(width int) []string {
+	var lines []string
+
+	input := m.filter.Value()
+	if input == "" {
+		lines = append(lines, dimStyle.Render("Enter a project name..."))
+		return lines
+	}
+
+	fullPath := m.expandPath(input)
+
+	lines = append(lines, previewHeader.Render("Will create:"))
+	lines = append(lines, "")
+	lines = append(lines, "  "+fullPath)
+	lines = append(lines, "")
+	lines = append(lines, previewHeader.Render("Actions:"))
+	lines = append(lines, "  • Create directory")
+	lines = append(lines, "  • Initialize git repo")
+	lines = append(lines, "  • Start Claude session")
+
+	// Check if path already exists
+	if _, err := os.Stat(fullPath); err == nil {
+		lines = append(lines, "")
+		lines = append(lines, confirmStyle.Render("⚠ Path already exists!"))
+	}
+
+	return lines
+}
+
 func truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
@@ -370,13 +465,56 @@ func wordWrap(s string, width int) []string {
 	return lines
 }
 
+func (m *pickerModel) expandPath(input string) string {
+	// If projectsDir is set, prepend it
+	if m.projectsDir != "" {
+		input = filepath.Join(m.projectsDir, input)
+	}
+
+	// Expand ~
+	if strings.HasPrefix(input, "~/") {
+		home, _ := os.UserHomeDir()
+		input = filepath.Join(home, input[2:])
+	}
+
+	return input
+}
+
+func (m *pickerModel) loadExistingDirs() {
+	m.existingDirs = nil
+
+	// Determine which directory to list
+	dir := m.projectsDir
+	if dir == "" {
+		home, _ := os.UserHomeDir()
+		dir = home
+	}
+
+	// Expand ~ if present
+	if strings.HasPrefix(dir, "~/") {
+		home, _ := os.UserHomeDir()
+		dir = filepath.Join(home, dir[2:])
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
+			m.existingDirs = append(m.existingDirs, entry.Name())
+		}
+	}
+}
+
 // SelectSession runs the interactive picker and returns the result
-func SelectSession(sessions []session.Session, showEmpty bool) (Result, error) {
+func SelectSession(sessions []session.Session, showEmpty bool, projectsDir string) (Result, error) {
 	if len(sessions) == 0 {
 		return Result{}, fmt.Errorf("no sessions found")
 	}
 
-	m := newPickerModel(sessions, showEmpty)
+	m := newPickerModel(sessions, showEmpty, projectsDir)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 
 	finalModel, err := p.Run()
